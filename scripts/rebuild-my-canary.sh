@@ -28,7 +28,7 @@ main() {
     PATCH_BRANCHES=(
         fork-ci
         571-implicit-naming-patterns
-        655-trust-cgnat-private-ip-gate
+        655-explain-apikey-gate-ui
         508-storage-per-root-folder
     )
 
@@ -54,10 +54,23 @@ main() {
     git checkout -B my-canary upstream/canary
 
     for branch in "${PATCH_BRANCHES[@]}"; do
+        if ! git rev-parse --verify --quiet "refs/heads/${branch}" >/dev/null; then
+            echo "" >&2
+            echo "ERROR: patch branch '${branch}' does not exist locally." >&2
+            echo "Fix the name in PATCH_BRANCHES (it may have been renamed), then re-run." >&2
+            exit 1
+        fi
+
         echo "==> Merging ${branch}..."
         if ! git merge --no-edit "$branch"; then
-            # rerere (autoupdate) may have already resolved and staged
-            # everything from a previous manual resolution — finish the merge.
+            # A real merge is in progress (MERGE_HEAD) but stopped. If rerere
+            # (autoupdate) already resolved and staged every conflict from a
+            # previous manual resolution, finish the merge; otherwise bail.
+            if [ ! -e "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
+                echo "" >&2
+                echo "ERROR: merge of '${branch}' failed before it started (see git output above)." >&2
+                exit 1
+            fi
             if [ -z "$(git diff --name-only --diff-filter=U)" ]; then
                 echo "==> Conflict auto-resolved by rerere; committing merge."
                 git commit --no-edit
