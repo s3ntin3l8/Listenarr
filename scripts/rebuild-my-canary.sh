@@ -33,6 +33,11 @@ main() {
 
     cd "$(git rev-parse --show-toplevel)"
 
+    # Remember merge-conflict resolutions (e.g. CHANGELOG entries from several
+    # patch branches) and re-apply + stage them automatically on every rebuild.
+    git config rerere.enabled true
+    git config rerere.autoupdate true
+
     if [ -n "$(git status --porcelain)" ]; then
         echo "ERROR: working tree is not clean — commit or stash first." >&2
         exit 1
@@ -50,12 +55,19 @@ main() {
     for branch in "${PATCH_BRANCHES[@]}"; do
         echo "==> Merging ${branch}..."
         if ! git merge --no-edit "$branch"; then
-            echo "" >&2
-            echo "ERROR: merge of '${branch}' conflicted." >&2
-            echo "Resolve the conflict and commit (git rerere will remember the" >&2
-            echo "resolution for future rebuilds), then re-run this script —" >&2
-            echo "or 'git merge --abort' to bail out." >&2
-            exit 1
+            # rerere (autoupdate) may have already resolved and staged
+            # everything from a previous manual resolution — finish the merge.
+            if [ -z "$(git diff --name-only --diff-filter=U)" ]; then
+                echo "==> Conflict auto-resolved by rerere; committing merge."
+                git commit --no-edit
+            else
+                echo "" >&2
+                echo "ERROR: merge of '${branch}' conflicted." >&2
+                echo "Resolve the conflict and commit (git rerere will remember the" >&2
+                echo "resolution for future rebuilds), then re-run this script —" >&2
+                echo "or 'git merge --abort' to bail out." >&2
+                exit 1
+            fi
         fi
     done
 
