@@ -29,6 +29,7 @@ main() {
         fork-ci
         571-implicit-naming-patterns
         655-trust-cgnat-private-ip-gate
+        508-storage-per-root-folder
     )
 
     cd "$(git rev-parse --show-toplevel)"
