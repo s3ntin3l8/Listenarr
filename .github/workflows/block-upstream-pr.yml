@@ -1,0 +1,25 @@
+# FORK-INTERNAL — lives on the fork-ci branch of s3ntin3l8/Listenarr and rides
+# into my-canary via merge.
+#
+# Tripwire: if fork-ci or my-canary is ever accidentally opened as a PR against
+# the upstream repo (Listenarrs/Listenarr), this check fails loudly. Legitimate
+# feature-branch PRs never contain this file because feature branches are cut
+# from upstream/canary, not from fork-ci/my-canary.
+name: Block upstream PR from fork-internal branch
+
+on:
+  pull_request:
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if PR targets upstream
+        run: |
+          if [ "${{ github.repository }}" = "Listenarrs/Listenarr" ]; then
+            echo "::error::This PR was opened from a fork-internal integration branch (fork-ci/my-canary)."
+            echo "::error::These branches bundle unmerged personal patches and CI files — CLOSE THIS PR."
+            echo "::error::Upstream PRs must come from a feature branch cut from upstream/canary."
+            exit 1
+          fi
+          echo "PR is within the fork — OK."
