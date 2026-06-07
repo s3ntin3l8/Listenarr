@@ -29,6 +29,11 @@ set -euo pipefail
 # real (unresolved) conflict or a merge that can't even start (e.g. bad ref).
 merge_branch() {
     local branch="$1"
+    # When "keep-ours-changelog" is passed (used for upstream PRs), a CHANGELOG.md
+    # conflict is auto-resolved in favour of our curated copy. PR changelogs are
+    # written against a different base and conflict unhelpfully (often as a
+    # tree-level modify/delete that rerere cannot replay), so we never take them.
+    local changelog_mode="${2:-}"
     if ! git rev-parse --verify --quiet "refs/heads/${branch}" >/dev/null; then
         echo "" >&2
         echo "ERROR: branch '${branch}' does not exist locally." >&2
@@ -46,8 +51,14 @@ merge_branch() {
             echo "ERROR: merge of '${branch}' failed before it started (see git output above)." >&2
             exit 1
         fi
+        if [ "$changelog_mode" = "keep-ours-changelog" ] \
+            && git diff --name-only --diff-filter=U | grep -qx "CHANGELOG.md"; then
+            echo "==> Keeping our CHANGELOG.md over the PR's."
+            git checkout --ours -- CHANGELOG.md 2>/dev/null || true
+            git add -- CHANGELOG.md
+        fi
         if [ -z "$(git diff --name-only --diff-filter=U)" ]; then
-            echo "==> Conflict auto-resolved by rerere; committing merge."
+            echo "==> Conflict auto-resolved (rerere/keep-ours); committing merge."
             git commit --no-edit
         else
             echo "" >&2
@@ -106,7 +117,7 @@ main() {
     for pr in "${UPSTREAM_PRS[@]}"; do
         echo "==> Fetching PR #${pr} (refs/pull/${pr}/head)..."
         git fetch -q upstream "pull/${pr}/head:pr-${pr}"
-        merge_branch "pr-${pr}"
+        merge_branch "pr-${pr}" keep-ours-changelog
     done
 
     echo "==> Pushing my-canary to origin (triggers image build)..."
