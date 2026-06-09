@@ -79,8 +79,6 @@ main() {
         571-implicit-naming-patterns
         655-explain-apikey-gate-ui
         508-storage-per-root-folder
-        658-multi-series-display-and-primary-toggle   # base of the 626 stack
-        626-sort-series-by-position                   # stacked on 658
     )
 
     # Open upstream PRs (by number) authored by anyone, folded in until they
