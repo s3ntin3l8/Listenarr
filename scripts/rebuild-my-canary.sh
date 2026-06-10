@@ -80,6 +80,7 @@ main() {
         655-explain-apikey-gate-ui
         672-author-grouping-normalization
         625-list-column-sort
+        675-list-view-scroll
     )
 
     # Open upstream PRs (by number) authored by anyone, folded in until they
