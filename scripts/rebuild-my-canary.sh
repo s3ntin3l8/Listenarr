@@ -79,6 +79,7 @@ main() {
         571-implicit-naming-patterns
         655-explain-apikey-gate-ui
         672-author-grouping-normalization
+        625-list-column-sort
     )
 
     # Open upstream PRs (by number) authored by anyone, folded in until they
@@ -87,6 +88,7 @@ main() {
     # PR lands (it then arrives via upstream/canary).
     UPSTREAM_PRS=(
         634   # bugfix/fix-nzbget-import (therobbiedavis) — Fix NZBGet import completion
+        585   # feat/audiobooks-grouped-list-view (kevinheneveld) — Add list view + per-grouping persistence
     )
 
     cd "$(git rev-parse --show-toplevel)"
