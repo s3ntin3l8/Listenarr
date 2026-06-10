@@ -211,7 +211,65 @@
 
     <!-- Grouped View -->
     <div v-else-if="groupBy !== 'books'" class="grouped-view">
-      <div class="grouped-grid">
+      <!-- List rendering for grouped collections (authors / series) -->
+      <div v-if="viewMode === 'list'" class="audiobooks-list collections-list">
+        <div
+          v-if="groupedCollections && groupedCollections.length > 0"
+          class="list-header collections-list-header"
+        >
+          <div class="col-cover">Cover</div>
+          <div class="col-title">{{ groupBy === 'authors' ? 'Author' : 'Series' }}</div>
+          <div class="col-count">Books</div>
+        </div>
+        <div
+          v-for="collection in groupedCollections || []"
+          :key="`collection-list-${collection.name}`"
+          class="audiobook-list-item collection-list-item"
+          :class="{
+            'author-collection': groupBy === 'authors',
+            'series-collection': groupBy === 'series',
+          }"
+          tabindex="0"
+          role="button"
+          :aria-label="`Open ${collection.name}`"
+          @click="navigateToCollection(collection)"
+          @keydown.enter.prevent="navigateToCollection(collection)"
+          @keydown.space.prevent="navigateToCollection(collection)"
+        >
+          <img
+            v-if="groupBy === 'authors'"
+            class="list-thumb"
+            :data-author-name="collection.name"
+            :data-author-has-cover="authorHasSpecificCoverMap[collection.name] ? '1' : ''"
+            :src="getProtectedImageSrc(getAuthorImageUrl(collection), getPlaceholderUrl())"
+            :alt="collection.name"
+            loading="lazy"
+            decoding="async"
+            @error="handleAuthorImageError(collection.name, $event)"
+          />
+          <img
+            v-else
+            class="list-thumb"
+            :src="
+              getProtectedImageSrc(
+                collection.coverUrls && collection.coverUrls[0],
+                getPlaceholderUrl(),
+              )
+            "
+            :alt="collection.name"
+            loading="lazy"
+            decoding="async"
+            @error="handleImageError"
+          />
+          <div class="list-details">
+            <div class="audiobook-title">{{ collection.name }}</div>
+          </div>
+          <div class="collection-count">
+            {{ collection.count }} book{{ collection.count !== 1 ? 's' : '' }}
+          </div>
+        </div>
+      </div>
+      <div v-else class="grouped-grid">
         <div
           v-for="collection in groupedCollections || []"
           :key="collection.name"
@@ -1378,6 +1436,9 @@ watch(groupBy, (v) => {
     localStorage.setItem(GROUP_BY_KEY, v)
   } catch {}
 
+  // Restore the view mode the user last left this grouping in.
+  viewMode.value = loadViewModeFor(v)
+
   // Ensure selected sort key is valid for the new grouping; reset to sensible defaults if needed
   const allowed = sortOptions.value.map((o) => o.value)
   const groupSort = sortState[v]
@@ -1525,10 +1586,11 @@ let authorCardObserver: IntersectionObserver | null = null
 
 function observeAuthorCards() {
   if (groupBy.value !== 'authors') return
+  // Matches both grid author cards (.audiobook-poster-container[data-author-name])
+  // and list-view author rows (.list-thumb[data-author-name]) so both participate
+  // in the lazy author-cover lookup.
   const cards = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      '.author-collection .audiobook-poster-container[data-author-name]',
-    ),
+    document.querySelectorAll<HTMLElement>('.author-collection [data-author-name]'),
   )
   if (cards.length === 0) return
 
@@ -1672,10 +1734,44 @@ const GRID_GAP = 20
 const BUFFER_ROWS = 2 // Extra rows to render above and below viewport
 const measuredRowHeight = ref<number | null>(null)
 
-// Local storage key for persisting view mode
-const VIEWMODE_KEY = 'listenarr.viewMode'
+// View mode is persisted per grouping so users can have, e.g., grid for books
+// but list for authors. The legacy single key is consulted once for migration —
+// when a per-grouping key is unset, we seed it from the legacy value.
+const VIEWMODE_KEY_LEGACY = 'listenarr.viewMode'
+const VIEWMODE_KEYS = {
+  books: 'listenarr.viewMode.books',
+  authors: 'listenarr.viewMode.authors',
+  series: 'listenarr.viewMode.series',
+} as const
 
-const viewMode = ref<'grid' | 'list'>('grid')
+function loadViewModeFor(g: 'books' | 'authors' | 'series'): 'grid' | 'list' {
+  try {
+    const legacy = localStorage.getItem(VIEWMODE_KEY_LEGACY)
+    if (legacy === 'grid' || legacy === 'list') {
+      for (const k of Object.values(VIEWMODE_KEYS)) {
+        if (localStorage.getItem(k) === null) localStorage.setItem(k, legacy)
+      }
+    }
+    const stored = localStorage.getItem(VIEWMODE_KEYS[g])
+    if (stored === 'grid' || stored === 'list') return stored
+  } catch {
+    /* ignore localStorage errors (e.g., privacy mode) */
+  }
+  return 'grid'
+}
+
+const viewMode = ref<'grid' | 'list'>(loadViewModeFor(groupBy.value))
+
+// Persist view mode under the per-grouping key whenever it changes. Set up at
+// top level so it always fires — the previous setup was gated by
+// scrollContainer being mounted, which only happens for groupBy === 'books'.
+watch(viewMode, (v) => {
+  try {
+    localStorage.setItem(VIEWMODE_KEYS[groupBy.value], v)
+  } catch {
+    /* ignore */
+  }
+})
 
 const visibleRange = ref({ start: 0, end: DEFAULT_VISIBLE_RANGE_END })
 
@@ -1910,7 +2006,6 @@ function handleClickOutside(event: Event) {
 let resizeObserver: ResizeObserver | null = null
 let stopVisibleRangeWatch: (() => void) | null = null
 let stopViewModeWatch: (() => void) | null = null
-let stopPersistViewModeWatch: (() => void) | null = null
 
 async function initializeVirtualScroller() {
   if (!scrollContainer.value) return
@@ -1960,16 +2055,9 @@ async function initializeVirtualScroller() {
       await nextTick()
       syncMeasuredRowHeight()
       updateVisibleRange()
-    })
-  }
-
-  if (!stopPersistViewModeWatch) {
-    stopPersistViewModeWatch = watch(viewMode, (v) => {
-      try {
-        localStorage.setItem(VIEWMODE_KEY, v)
-      } catch {
-        /* ignore */
-      }
+      // Grid and list render different author markers, so re-observe after a
+      // view switch to keep list-view author rows in the lazy-cover-lookup path.
+      observeAuthorCards()
     })
   }
 }
@@ -1981,16 +2069,6 @@ onMounted(async () => {
     configStore.loadApplicationSettings(),
     loadQualityProfiles(),
   ])
-
-  // Load persisted view mode (if available) before layout calc
-  try {
-    const stored = localStorage.getItem(VIEWMODE_KEY)
-    if (stored === 'list' || stored === 'grid') {
-      viewMode.value = stored as 'grid' | 'list'
-    }
-  } catch {
-    // ignore localStorage errors (e.g., privacy mode)
-  }
 
   await initializeVirtualScroller()
 
@@ -2024,11 +2102,6 @@ onUnmounted(() => {
     stopViewModeWatch?.()
   } catch {}
   stopViewModeWatch = null
-
-  try {
-    stopPersistViewModeWatch?.()
-  } catch {}
-  stopPersistViewModeWatch = null
 
   try {
     authorCardObserver?.disconnect()
@@ -2451,6 +2524,8 @@ defineExpose({
   setGroupBy,
   groupedCollections,
   showItemDetails,
+  viewMode,
+  toggleViewMode,
 })
 </script>
 
@@ -3991,6 +4066,26 @@ defineExpose({
   width: 12px;
   height: 12px;
   flex-shrink: 0;
+}
+
+/* Collection list rows (author / series grouping in list view) */
+.collections-list-header {
+  grid-template-columns: 64px 1fr auto;
+}
+
+.collections-list-header .col-count {
+  opacity: 0.9;
+  text-align: right;
+}
+
+.collection-list-item {
+  grid-template-columns: 64px 1fr auto;
+}
+
+.collection-list-item .collection-count {
+  font-size: 12px;
+  color: #ccc;
+  text-align: right;
 }
 
 /* Position badges between details and actions */
