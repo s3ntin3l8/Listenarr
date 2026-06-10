@@ -57,7 +57,7 @@
 
       <FormRow
         label="API Key (Server)"
-        help="API key for authenticating external applications. Generate a new key if needed. Copy it to use with API clients."
+        help="API key for authenticating external applications. Copy it to use with API clients. For security, the key is only revealed to signed-in administrators or to clients on a local/private network — if it appears blank, enable authentication and sign in (or open Listenarr from a local/trusted network) to view, copy, or regenerate it."
       >
         <ApiKeyControl :apiKey="apiKey" :disabled="false" @update:apiKey="onApiKeyUpdated" />
       </FormRow>
