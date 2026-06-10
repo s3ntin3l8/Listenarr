@@ -78,7 +78,7 @@ main() {
         fork-ci
         571-implicit-naming-patterns
         655-explain-apikey-gate-ui
-        508-storage-per-root-folder
+        672-author-grouping-normalization
     )
 
     # Open upstream PRs (by number) authored by anyone, folded in until they
