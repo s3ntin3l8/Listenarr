@@ -16,18 +16,39 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 using System.Net;
+using Listenarr.Application.Downloads;
 using Listenarr.Application.Interfaces;
 using Listenarr.Domain.Models;
 using Listenarr.Infrastructure.Adapters;
+using Listenarr.Tests.Builders;
 using Listenarr.Tests.Common;
+using Listenarr.Tests.Mocks.Api;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
 
 namespace Listenarr.Tests.Features.Infrastructure.Adapters
 {
-    public class NzbgetAdapterTests
+    public class NzbgetAdapterTests : BaseTests
     {
+        private DownloadClientConfiguration? _client;
+        private NzbgetApiMock _nzbgetApiMock = null!;
+
+        public override async Task InitializeAsync()
+        {
+            await base.InitializeAsync();
+            _nzbgetApiMock = _provider.GetRequiredService<NzbgetApiMock>();
+            _nzbgetApiMock.IncludeActiveQueueGroup = true;
+
+            _client = await _downloadClientConfigurationRepository.SaveAsync(
+                new DownloadClientConfigurationBuilder()
+                    .WithType("nzbget")
+                    .WithHost("localhost")
+                    .WithPort(6789)
+                    .Build());
+        }
+
         private sealed class TestHttpClientFactory : IHttpClientFactory
         {
             private readonly HttpClient _client;
@@ -158,6 +179,130 @@ namespace Listenarr.Tests.Features.Infrastructure.Adapters
             Assert.Equal("192.168.50.111", capturedUri.Host);
             Assert.Equal(6789, capturedUri.Port);
             Assert.Equal("/xmlrpc", capturedUri.AbsolutePath);
+        }
+
+        // Issue #619 — NZBGet's JSON-RPC `listgroups` returns FileSizeMB / RemainingSizeMB
+        // as JSON Number; verify FetchDownloadsAsync maps progress onto the matching
+        // Download via AdapterUtils.MapDownloadProgress, instead of throwing
+        // InvalidOperationException at the Number-as-String access (the original bug).
+        [Fact]
+        public async Task FetchDownloadsAsync_UpdatesProgressForMatchingActiveGroup()
+        {
+            var gateway = _provider.GetRequiredService<IDownloadClientGateway>();
+
+            var download = new DownloadBuilder()
+                .WithClientDownloadId(NzbgetApiMock.ACTIVE_DOWNLOAD_NZBID)
+                .Build();
+
+            var result = await gateway.FetchDownloadsAsync(
+                _client!,
+                new List<Download> { download },
+                CancellationToken.None);
+
+            Assert.NotNull(result);
+            Assert.Equal(DownloadStatus.Downloading, download.Status);
+            Assert.Equal(50M, download.Progress);
+            Assert.Equal(0, _nzbgetApiMock.HistoryRequestCount);
+        }
+
+        [Fact]
+        public async Task FetchDownloadsAsync_UpdatesProgressWhenActiveGroupSizesAreStrings()
+        {
+            var gateway = _provider.GetRequiredService<IDownloadClientGateway>();
+            _nzbgetApiMock.ReturnActiveQueueSizesAsStrings = true;
+
+            var download = new DownloadBuilder()
+                .WithClientDownloadId(NzbgetApiMock.ACTIVE_DOWNLOAD_NZBID)
+                .Build();
+
+            var result = await gateway.FetchDownloadsAsync(
+                _client!,
+                new List<Download> { download },
+                CancellationToken.None);
+
+            Assert.NotNull(result);
+            Assert.Equal(DownloadStatus.Downloading, download.Status);
+            Assert.Equal(50M, download.Progress);
+            Assert.Equal(0, _nzbgetApiMock.HistoryRequestCount);
+        }
+
+        [Fact]
+        public async Task FetchDownloadsAsync_NoEligibleTrackedDownloads_SkipsHistoryLookup()
+        {
+            var gateway = _provider.GetRequiredService<IDownloadClientGateway>();
+            _nzbgetApiMock.IncludeActiveQueueGroup = false;
+
+            var result = await gateway.FetchDownloadsAsync(
+                _client!,
+                [],
+                CancellationToken.None);
+
+            Assert.NotNull(result);
+            Assert.Empty(result);
+            Assert.Equal(0, _nzbgetApiMock.HistoryRequestCount);
+        }
+
+        [Fact]
+        public async Task FetchDownloadsAsync_HistoryFailure_ReturnsActiveQueueUpdates()
+        {
+            var gateway = _provider.GetRequiredService<IDownloadClientGateway>();
+            _nzbgetApiMock.FailHistoryRequests = true;
+
+            var activeDownload = new DownloadBuilder()
+                .WithClientDownloadId(NzbgetApiMock.ACTIVE_DOWNLOAD_NZBID)
+                .Build();
+
+            var missingFromQueueDownload = new DownloadBuilder()
+                .WithClientDownloadId(NzbgetApiMock.COMPLETED_FILE_NZBGET)
+                .Build();
+
+            var result = await gateway.FetchDownloadsAsync(
+                _client!,
+                new List<Download> { activeDownload, missingFromQueueDownload },
+                CancellationToken.None);
+
+            Assert.NotNull(result);
+            Assert.Equal(DownloadStatus.Downloading, activeDownload.Status);
+            Assert.Equal(50M, activeDownload.Progress);
+            Assert.True(_nzbgetApiMock.HistoryRequestCount > 0);
+        }
+
+        [Fact]
+        public async Task MonitorDownloadsAsync_CompletedHistoryItem_QueuesProcessingJobWithResolvedPath()
+        {
+            var sourceDirectory = FileService.GetTempDirectory("nzbget-completed");
+            var sourceFile = await FileService.GetFileAsync(sourceDirectory, "test.release.m4b");
+            _nzbgetApiMock.IncludeActiveQueueGroup = false;
+            _nzbgetApiMock.CompletedContentPath = sourceFile;
+
+            var audiobook = await _audiobookRepository.AddAsync(new AudiobookBuilder()
+                .WithBasePath(FileService.GetTempDirectory("nzbget-library"))
+                .Build());
+
+            var download = await _downloadRepository.AddAsync(new DownloadBuilder()
+                .WithDownloadClientConfiguration(_client!)
+                .WithAudiobook(audiobook)
+                .WithDownloading(75)
+                .WithPath(string.Empty)
+                .WithTitle("test.release")
+                .WithClientDownloadId(NzbgetApiMock.COMPLETED_FILE_NZBGET)
+                .Build());
+
+            var monitor = _provider.GetRequiredService<DownloadMonitorService>();
+
+            await monitor.MonitorDownloadsAsync(CancellationToken.None);
+
+            var updated = await _downloadRepository.GetByIdAsync(download.Id);
+            Assert.NotNull(updated);
+            Assert.Equal(DownloadStatus.Completed, updated.Status);
+            Assert.Equal(100M, updated.Progress);
+            Assert.Equal(sourceFile, updated.DownloadPath);
+
+            var jobs = await _downloadProcessingJobRepository.GetRecentAsync(2);
+            var job = Assert.Single(jobs);
+            Assert.Equal(download.Id, job.DownloadId);
+            Assert.Equal(ProcessingJobStatus.Pending, job.Status);
+            Assert.Equal(sourceFile, job.SourcePath);
         }
     }
 }
